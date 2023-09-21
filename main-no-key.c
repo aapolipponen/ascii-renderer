@@ -1,0 +1,311 @@
+#include <stdio.h>
+#include <math.h>
+#include <unistd.h>
+#include <float.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+#define SCREEN_WIDTH 64
+#define SCREEN_HEIGHT 40
+
+typedef struct {
+    float centerX, centerY, centerZ;
+    float focalLength;
+} ScreenData;
+
+char screen[SCREEN_HEIGHT][SCREEN_WIDTH];
+
+float focalLength = 100.0f;
+float centerX, centerY, centerZ;
+
+char shades[] = ".:-=+*%@#";  // Characters for shading from darkest to brightest
+
+typedef struct {
+    float x, y, z;
+} Vertex3D;
+
+typedef struct {
+    Vertex3D* vertices;
+    int* faces;
+    int vertexCount;
+    int faceCount;
+} Model;
+
+Model readObjFile(const char* filename) {
+    FILE* file = fopen(filename, "r");
+    if (!file) {
+        // Handle error
+        exit(1);
+    }
+
+    Model model;
+    model.vertexCount = 0;
+    model.faceCount = 0;
+
+    // First pass: count the number of vertices and faces
+    char line[256];
+    while (fgets(line, sizeof(line), file)) {
+        if (line[0] == 'v') model.vertexCount++;
+        if (line[0] == 'f') model.faceCount++;
+    }
+
+    model.vertices = malloc(model.vertexCount * sizeof(Vertex3D));
+    model.faces = malloc(model.faceCount * 3 * sizeof(int));  // Assuming triangles
+
+    fseek(file, 0, SEEK_SET);  // Go back to the start of the file
+
+    // Initializing max/min values for x, y, z
+    float maxX = -FLT_MAX, minX = FLT_MAX;
+    float maxY = -FLT_MAX, minY = FLT_MAX;
+    float maxZ = -FLT_MAX, minZ = FLT_MAX;
+
+    // Second pass: read the vertices and faces
+    int vIndex = 0, fIndex = 0;
+    while (fgets(line, sizeof(line), file)) {
+        if (line[0] == 'v') {
+            sscanf(line, "v %f %f %f", &model.vertices[vIndex].x, &model.vertices[vIndex].y, &model.vertices[vIndex].z);
+
+            // Check for max/min x, y, z values
+            if (model.vertices[vIndex].x > maxX) maxX = model.vertices[vIndex].x;
+            if (model.vertices[vIndex].x < minX) minX = model.vertices[vIndex].x;
+            if (model.vertices[vIndex].y > maxY) maxY = model.vertices[vIndex].y;
+            if (model.vertices[vIndex].y < minY) minY = model.vertices[vIndex].y;
+            if (model.vertices[vIndex].z > maxZ) maxZ = model.vertices[vIndex].z;
+            if (model.vertices[vIndex].z < minZ) minZ = model.vertices[vIndex].z;
+
+            vIndex++;
+        }
+        if (line[0] == 'f') {
+            int v1, v2, v3;
+            sscanf(line, "f %d %d %d", &v1, &v2, &v3);
+            model.faces[fIndex * 3] = v1 - 1;  // .obj indices start at 1
+            model.faces[fIndex * 3 + 1] = v2 - 1;
+            model.faces[fIndex * 3 + 2] = v3 - 1;
+            fIndex++;
+        }
+    }
+
+    // Compute the center coordinates for x, y, z
+    centerX = (maxX + minX) / 2;
+    centerY = (maxY + minY) / 2;
+    centerZ = (maxZ + minZ) / 2;
+
+    fclose(file);
+    return model;
+}
+
+typedef struct {
+    int x, y;
+} Vertex2D;
+
+typedef struct {
+    float m[4][4];
+} Matrix4x4;
+
+Vertex3D CrossProduct(Vertex3D a, Vertex3D b) {
+    Vertex3D result;
+    result.x = a.y * b.z - a.z * b.y;
+    result.y = a.z * b.x - a.x * b.z;
+    result.z = a.x * b.y - a.y * b.x;
+    return result;
+}
+
+Vertex3D Normalize(Vertex3D v) {
+    float length = sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+    Vertex3D result;
+    result.x = v.x / length;
+    result.y = v.y / length;
+    result.z = v.z / length;
+    return result;
+}
+
+float DotProduct(Vertex3D a, Vertex3D b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+Matrix4x4 RotationMatrix(float ax, float ay, float az) {
+    float sinX = sin(ax), cosX = cos(ax);
+    float sinY = sin(ay), cosY = cos(ay);
+    float sinZ = sin(az), cosZ = cos(az);
+
+    Matrix4x4 matrix = {
+        cosY * cosZ, 
+        cosX * sinZ + sinX * sinY * cosZ,
+        sinX * sinZ - cosX * sinY * cosZ,
+        0,
+        
+        -cosY * sinZ,
+        cosX * cosZ - sinX * sinY * sinZ,
+        sinX * cosZ + cosX * sinY * sinZ,
+        0,
+        
+        sinY,
+        -sinX * cosY,
+        cosX * cosY,
+        0,
+        
+        0, 0, 0, 1
+    };
+    return matrix;
+}
+
+Matrix4x4 ScalingMatrix(float sx, float sy, float sz) {
+    Matrix4x4 result = {0};  // Initializes all values to zero
+    result.m[0][0] = sx;
+    result.m[1][1] = sy;
+    result.m[2][2] = sz;
+    result.m[3][3] = 1;
+    return result;
+}
+
+Matrix4x4 MultiplyMatrices(const Matrix4x4 a, const Matrix4x4 b) {
+    Matrix4x4 result = {0};
+
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            for (int k = 0; k < 4; k++) {
+                result.m[i][j] += a.m[i][k] * b.m[k][j];
+            }
+        }
+    }
+    
+    return result;
+}
+
+Matrix4x4 TranslationMatrix(float tx, float ty, float tz) {
+    Matrix4x4 result = {{
+        {1, 0, 0, tx},
+        {0, 1, 0, ty},
+        {0, 0, 1, tz},
+        {0, 0, 0, 1}
+    }};
+    return result;
+}
+
+
+Vertex3D TransformVertex(Vertex3D vertex, Matrix4x4 matrix) {
+    Vertex3D result;
+    result.x = vertex.x * matrix.m[0][0] + vertex.y * matrix.m[1][0] + vertex.z * matrix.m[2][0] + matrix.m[3][0];
+    result.y = vertex.x * matrix.m[0][1] + vertex.y * matrix.m[1][1] + vertex.z * matrix.m[2][1] + matrix.m[3][1];
+    result.z = vertex.x * matrix.m[0][2] + vertex.y * matrix.m[1][2] + vertex.z * matrix.m[2][2] + matrix.m[3][2];
+    return result;
+}
+
+Vertex2D ProjectVertexTo2D(Vertex3D v, float focalLength) {
+    Vertex2D result;
+    float offsetZ = v.z + 6.0f;  // How far away the model is from the camera
+    
+    float aspectRatio = (float)SCREEN_WIDTH / (float)SCREEN_HEIGHT;  // Aspect ratio
+    float projectedX = (v.x / offsetZ) * focalLength * aspectRatio;  // Apply aspect ratio to X
+    float projectedY = (v.y / offsetZ) * focalLength;
+
+    result.x = projectedX + SCREEN_WIDTH / 2;
+    result.y = -projectedY + SCREEN_HEIGHT / 2;
+
+    return result;
+}
+
+void drawShadedLine(int x1, int y1, int x2, int y2, float brightness) {
+    int shadeIndex = (int)((brightness * (sizeof(shades) - 2)) + 0.5);  // Rounding
+    char shade = shades[shadeIndex];
+    
+    int dx = abs(x2 - x1);
+    int dy = abs(y2 - y1);
+    int sx = x1 < x2 ? 1 : -1;
+    int sy = y1 < y2 ? 1 : -1;
+    int err = (dx > dy ? dx : -dy) / 2;
+    int e2;
+    
+    while (1) {
+        if (x1 >= 0 && x1 < SCREEN_WIDTH && y1 >= 0 && y1 < SCREEN_HEIGHT) {
+            screen[y1][x1] = shade;
+        }
+        if (x1 == x2 && y1 == y2) break;
+        e2 = err;
+        if (e2 > -dx) { err -= dy; x1 += sx; }
+        if (e2 < dy) { err += dx; y1 += sy; }
+    }
+}
+
+Matrix4x4 computeTransform(float angle) {
+    Matrix4x4 translationToOrigin = TranslationMatrix(-centerX, -centerY, -centerZ);
+    Matrix4x4 rotation = RotationMatrix(0, angle, 0);
+    Matrix4x4 translationBack = TranslationMatrix(centerX, centerY, centerZ);
+
+    Matrix4x4 transform = MultiplyMatrices(translationBack, rotation);
+    transform = MultiplyMatrices(transform, translationToOrigin);
+
+    return transform;
+}
+
+float computeFaceBrightness(Model model, Matrix4x4 transform, int faceIndex, Vertex3D lightDirection) {
+    Vertex3D v0 = TransformVertex(model.vertices[model.faces[faceIndex * 3]], transform);
+    Vertex3D v1 = TransformVertex(model.vertices[model.faces[faceIndex * 3 + 1]], transform);
+    Vertex3D v2 = TransformVertex(model.vertices[model.faces[faceIndex * 3 + 2]], transform);
+
+    Vertex3D edge1 = {v1.x - v0.x, v1.y - v0.y, v1.z - v0.z};
+    Vertex3D edge2 = {v2.x - v0.x, v2.y - v0.y, v2.z - v0.z};
+
+    Vertex3D normal = CrossProduct(edge1, edge2);
+    normal = Normalize(normal);
+
+    float brightness = DotProduct(normal, lightDirection);
+    brightness = (brightness + 1) / 2; // Normalize to [0, 1]
+
+    return brightness;
+}
+
+void drawFace(Model model, Matrix4x4 transform, int faceIndex, float brightness, float focalLength) {
+    for (int j = 0; j < 3; j++) {
+        Vertex3D currentVertex = TransformVertex(model.vertices[model.faces[faceIndex * 3 + j]], transform);
+        Vertex3D nextVertex = TransformVertex(model.vertices[model.faces[faceIndex * 3 + ((j + 1) % 3)]], transform);
+
+        Vertex2D projectedCurrent = ProjectVertexTo2D(currentVertex, focalLength);
+        Vertex2D projectedNext = ProjectVertexTo2D(nextVertex, focalLength);
+
+        drawShadedLine(projectedCurrent.x, projectedCurrent.y, projectedNext.x, projectedNext.y, brightness);
+    }
+}
+
+void printScreen() {
+    for (int y = 0; y < SCREEN_HEIGHT; y++) {
+        for (int x = 0; x < SCREEN_WIDTH; x++) {
+            putchar(screen[y][x] ? screen[y][x] : ' ');
+        }
+        putchar('\n');
+    }
+}
+
+void clearScreen() {
+    for (int y = 0; y < SCREEN_HEIGHT; y++) {
+        for (int x = 0; x < SCREEN_WIDTH; x++) {
+            screen[y][x] = ' ';
+        }
+    }
+}
+
+void renderLoop(Model model) {
+    float angle = 0;
+    Vertex3D lightDirection = {0, 0, -1}; 
+    lightDirection = Normalize(lightDirection);
+
+    int sleeptime = 50000;
+
+    while (1) {
+        clearScreen();
+        Matrix4x4 transform = computeTransform(angle);
+        for (int i = 0; i < model.faceCount; i++) {
+            float brightness = computeFaceBrightness(model, transform, i, lightDirection);
+            drawFace(model, transform, i, brightness, focalLength);
+        }
+        printScreen();
+        usleep(sleeptime);
+        angle += 0.05;
+    }
+}
+
+int main() {
+    Model model = readObjFile("model2.obj");
+    renderLoop(model);
+    return 0;
+}
