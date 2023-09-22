@@ -5,8 +5,6 @@ SRC = main.c
 OBJ = $(SRC:.c=.o)
 EXE = a.out
 
-MODEL_FILES = model1.obj model2.obj
-
 all: $(EXE)
 
 $(EXE): $(OBJ)

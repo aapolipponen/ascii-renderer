@@ -86,16 +86,6 @@ typedef struct {
     float radius;
 } Camera;
 
-typedef struct {
-    Vertex3D origin;
-    Vertex3D direction;
-} Ray3D;
-
-// Function declarations
-Vertex3D normalizeVertex(Vertex3D v);
-Vertex3D CrossProduct(Vertex3D a, Vertex3D b);
-float DotProduct(Vertex3D a, Vertex3D b);
-
 Vertex3D addVertices(Vertex3D v1, Vertex3D v2) {
     Vertex3D result;
     result.x = v1.x + v2.x;
@@ -141,126 +131,6 @@ typedef struct {
 
 void handleCameraControl(Camera* camera);
 float computeFaceBrightness(Vertex3D vertex, Vertex3D normal, Light light, Vertex3D viewDirection, Material material);
-
-typedef struct {
-    Vertex3D origin;
-    Vertex3D direction;
-} Ray;
-
-void setPixelColor(int x, int y, float brightness) {
-    char grayscaleChars[] = " .:-=+*%@#";
-    int numChars = sizeof(grayscaleChars) - 1; // Excluding the null-terminator
-
-    // Clamp the brightness value between 0 and 1
-    if (brightness < 0.0f) brightness = 0.0f;
-    if (brightness > 1.0f) brightness = 1.0f;
-
-    // Map brightness to one of the grayscale characters
-    int charIndex = (int)(brightness * (numChars - 1));
-
-    screen[y][x] = grayscaleChars[charIndex];
-}
-
-Vertex3D screenCenter = {SCREEN_WIDTH / 2.0f, SCREEN_HEIGHT / 2.0f, 1.0f};
-
-Ray3D generateRayForPixel(int x, int y) {
-    Ray3D ray;
-    ray.origin = camera.position;
-
-    // Pixel's position in world coordinates
-    Vertex3D pixelPosition = {(float)x, (float)y, screenCenter.z};
-
-    // Ray's direction is from the camera's position to the pixel's position
-    ray.direction.x = pixelPosition.x - camera.position.x;
-    ray.direction.y = pixelPosition.y - camera.position.y;
-    ray.direction.z = pixelPosition.z - camera.position.z;
-
-    // Normalize the direction for consistency
-    float magnitude = sqrt(ray.direction.x * ray.direction.x +
-                           ray.direction.y * ray.direction.y +
-                           ray.direction.z * ray.direction.z);
-
-    ray.direction.x /= magnitude;
-    ray.direction.y /= magnitude;
-    ray.direction.z /= magnitude;
-
-    return ray;
-}
-
-int rayIntersectsTriangle(Ray ray, Vertex3D v0, Vertex3D v1, Vertex3D v2, float* t) {
-    Vertex3D e1, e2, h, s, q;
-    float a, f, u, v;
-
-    e1.x = v1.x - v0.x;
-    e1.y = v1.y - v0.y;
-    e1.z = v1.z - v0.z;
-
-    e2.x = v2.x - v0.x;
-    e2.y = v2.y - v0.y;
-    e2.z = v2.z - v0.z;
-
-    h = CrossProduct(ray.direction, e2);
-    a = DotProduct(e1, h);
-
-    if (a > -FLT_EPSILON && a < FLT_EPSILON)
-        return 0;
-
-    f = 1.0 / a;
-    s.x = ray.origin.x - v0.x;
-    s.y = ray.origin.y - v0.y;
-    s.z = ray.origin.z - v0.z;
-
-    u = f * DotProduct(s, h);
-
-    if (u < 0.0 || u > 1.0)
-        return 0;
-
-    q = CrossProduct(s, e1);
-    v = f * DotProduct(ray.direction, q);
-
-    if (v < 0.0 || u + v > 1.0)
-        return 0;
-
-    // At this stage, we can compute t to find out where the intersection point is on the line.
-    float tempT = f * DotProduct(e2, q);
-
-    if (tempT > FLT_EPSILON) {
-        *t = tempT;
-        return 1;
-    }
-
-    // No hit
-    return 0;
-}
-
-int rayIntersectsModel(Ray3D ray, Model model, float* nearestT) {
-    int hasIntersection = 0;
-    float t;
-
-    for (int i = 0; i < model.faceCount; i++) {
-        Vertex3D vertexA = model.vertices[model.faces[i * 3]];
-        Vertex3D vertexB = model.vertices[model.faces[i * 3 + 1]];
-        Vertex3D vertexC = model.vertices[model.faces[i * 3 + 2]];
-
-        if (rayIntersectsTriangle(ray, vertexA, vertexB, vertexC, &t)) {
-            if (!hasIntersection || t < *nearestT) {
-                *nearestT = t;
-                hasIntersection = 1;
-            }
-        }
-    }
-
-    return hasIntersection;
-}
-
-float computeShading(Vertex3D intersectionPoint, Model model, Vertex3D lightDirection) {
-    Vertex3D normal;  // Assuming you have a way to compute the normal at intersectionPoint
-
-    float brightness = DotProduct(normal, lightDirection);
-    if (brightness < 0) brightness = 0;
-
-    return brightness;
-}
 
 void initZBuffer() {
     for (int y = 0; y < SCREEN_HEIGHT; y++) {
@@ -428,6 +298,7 @@ Matrix4x4 TranslationMatrix(float tx, float ty, float tz) {
     return result;
 }
 
+
 Vertex3D TransformVertex(Vertex3D vertex, Matrix4x4 matrix) {
     Vertex3D result;
     result.x = vertex.x * matrix.m[0][0] + vertex.y * matrix.m[1][0] + vertex.z * matrix.m[2][0] + matrix.m[3][0];
@@ -455,6 +326,36 @@ Vertex2D ProjectVertexTo2D(Vertex3D v, Camera camera, float focalLength) {
     return result;
 }
 
+void drawShadedLine(int x1, int y1, float z1, int x2, int y2, float z2, float brightness) {
+    int shadeIndex = (int)((brightness * (sizeof(shades) - 2)) + 0.5);  
+    char shade = shades[shadeIndex];
+
+    int dx = abs(x2 - x1);
+    int dy = abs(y2 - y1);
+    int sx = x1 < x2 ? 1 : -1;
+    int sy = y1 < y2 ? 1 : -1;
+    int sz = z1 < z2 ? 1 : -1;
+    int err = (dx > dy ? dx : -dy) / 2;
+    int e2;
+
+    float zCurrent = z1;
+
+    while (1) {
+        if (x1 >= 0 && x1 < SCREEN_WIDTH && y1 >= 0 && y1 < SCREEN_HEIGHT) {
+            if (zCurrent < zbuffer[y1][x1]) {  // Check against the Z-buffer
+                screen[y1][x1] = shade;
+                zbuffer[y1][x1] = zCurrent;
+            }
+        }
+
+        if (x1 == x2 && y1 == y2) break;
+
+        e2 = err;
+        if (e2 > -dx) { err -= dy; x1 += sx; zCurrent += sz; }
+        if (e2 < dy) { err += dx; y1 += sy; zCurrent += sz; }
+    }
+}
+
 Matrix4x4 computeTransform(Rotation rotationData) {
     Matrix4x4 translationToOrigin = TranslationMatrix(-centerX, -centerY, -centerZ);
     Matrix4x4 rotationYaw = RotationMatrix(0, rotationData.yaw, 0);
@@ -467,6 +368,43 @@ Matrix4x4 computeTransform(Rotation rotationData) {
     transform = MultiplyMatrices(transform, translationToOrigin);
 
     return transform;
+}
+
+float computeFaceBrightness(Vertex3D vertex, Vertex3D normal, Light light, Vertex3D viewDirection, Material material) {
+    // Calculate the light direction
+    Vertex3D lightDirection = normalizeVertex(light.direction);
+
+    // Calculate dot product for diffuse component using Lambert's cosine law
+    float dotNormalLight = DotProduct(normal, lightDirection);
+    float diffuse = fmax(0.0, dotNormalLight);
+
+    // Calculate the halfway vector (Blinn-Phong halfway vector) and dot product for specular component
+    Vertex3D halfway = normalizeVertex(addVertices(lightDirection, viewDirection));
+    float dotNormalHalfway = DotProduct(normal, halfway);
+    float specular = pow(fmax(0.0, dotNormalHalfway), material.shininess);
+
+    // Assuming ambient reflection as a constant scalar for simplicity
+    float ambient = 0.1;
+
+    // Calculate brightness as the weighted sum of components
+    float brightness = ambient + diffuse + specular;
+
+    // Ensure brightness is in the [0, 1] range
+    brightness = fmax(0.0, fmin(1.0, brightness));
+
+    return brightness;
+}
+
+void drawFace(Model model, Matrix4x4 transform, int faceIndex, float brightness, float focalLength) {
+    for (int j = 0; j < 3; j++) {
+        Vertex3D currentVertex = TransformVertex(model.vertices[model.faces[faceIndex * 3 + j]], transform);
+        Vertex3D nextVertex = TransformVertex(model.vertices[model.faces[faceIndex * 3 + ((j + 1) % 3)]], transform);
+
+        Vertex2D projectedCurrent = ProjectVertexTo2D(currentVertex, camera, focalLength);
+        Vertex2D projectedNext = ProjectVertexTo2D(nextVertex, camera, focalLength);
+
+        drawShadedLine(projectedCurrent.x, projectedCurrent.y, currentVertex.z, projectedNext.x, projectedNext.y, nextVertex.z, brightness);
+    }
 }
 
 void printControlLine() {
@@ -504,42 +442,40 @@ void clearScreen() {
     }
 }
 
-void renderLoop(Model model, Camera camera, Rotation rotation) {
+void renderLoop(Model model) {
     Vertex3D lightDirection = {0, 0, -1};
     lightDirection = normalizeVertex(lightDirection);
 
-    const int sleeptime = 50000;
-    const float depth = model.maxBounds.z - model.minBounds.z;
-    const float additionalDistance = depth * -5;
+    int sleeptime = 50000;
 
+    float depth = model.maxBounds.z - model.minBounds.z;
+    float additionalDistance = depth * -5;
     camera.position.z = model.maxBounds.z + depth / 2 + additionalDistance;
 
     while (1) {
         handleCameraControl(&camera);
         clearScreen();
         initZBuffer();
+        Matrix4x4 transform = computeTransform(rotation);
+        // For each face
+        for (int i = 0; i < model.faceCount; i++) {
+            // Calculate face normal
+            Vertex3D vertexA = model.vertices[model.faces[i * 3]];
+            Vertex3D vertexB = model.vertices[model.faces[i * 3 + 1]];
+            Vertex3D vertexC = model.vertices[model.faces[i * 3 + 2]];
 
-        // For each pixel on the screen
-        for (int y = 0; y < SCREEN_HEIGHT; y++) {
-            for (int x = 0; x < SCREEN_WIDTH; x++) {
-                Ray3D ray = generateRayForPixel(x, y);
-                float nearestT;
-                // Check if the ray intersects with the model
-                if (rayIntersectsModel(Ray3D, model, &nearestT)) {
-                    // Compute the intersection point
-                    Vertex3D intersectionPoint = {
-                        ray.origin.x + ray.direction.x * nearestT,
-                        ray.origin.y + ray.direction.y * nearestT,
-                        ray.origin.z + ray.direction.z * nearestT
-                    };
+            Vertex3D side1 = {vertexB.x - vertexA.x, vertexB.y - vertexA.y, vertexB.z - vertexA.z};
+            Vertex3D side2 = {vertexC.x - vertexA.x, vertexC.y - vertexA.y, vertexC.z - vertexA.z};
 
-                    // Compute the shading based on intersection point, light source, etc.
-                    float brightness = computeShading(intersectionPoint, model, lightDirection);
-                    setPixelColor(x, y, brightness);
-                }
-            }
+            Vertex3D normal = CrossProduct(side1, side2);
+            normal = normalizeVertex(normal);
+
+            // Calculate brightness for this face
+            float brightness = computeFaceBrightness(vertexA, normal, light, normal, material);
+
+            // Draw the face with the calculated brightness
+            drawFace(model, transform, i, brightness, focalLength);
         }
-
         rotation.yaw += rotation.deltaYaw;
         if (rotation.yaw >= TWO_PI) {
             rotation.yaw -= TWO_PI;
@@ -659,7 +595,7 @@ void handleCameraControl(Camera* camera) {
 }
 
 int main() {
-    Model model = readObjFile("models/suzanne.obj");
-    renderLoop(model, camera, rotation);
+    Model model = readObjFile("models/utahteapot.obj");
+    renderLoop(model);
     return 0;
 }
